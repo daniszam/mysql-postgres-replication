@@ -1,3 +1,4 @@
+import binascii
 import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, WriteRowsEvent
@@ -8,6 +9,9 @@ from replication.query import Query
 
 
 class MySqlService(object):
+    # special data types
+    BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
+    SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
     def __init__(self, connection_conf) -> None:
         super().__init__()
@@ -21,6 +25,8 @@ class MySqlService(object):
         self.skip_tables = {}
         self.schema_replica = []
         self.connection_conf = connection_conf
+        self.special_data_types = self.BLOB + self.special_data_types
+        self.batch_size = 10
 
     def connection(self, connection_conf: Connection):
         self.conn_buffered = pymysql.connect(
@@ -104,30 +110,74 @@ class MySqlService(object):
         log_position = binlogevent.packet.log_pos
         table = binlogevent.table
         schema = binlogevent.schema
+        batch_insert = []
 
-        if self.skip_event(table, schema, binlogevent) or self.ignore_table(table, schema):
+        event = self.get_event(binlogevent)
+        if self.skip_event(table, schema, event) or self.ignore_table(table, schema):
             return
 
+        table_type_map = self.get_table_type_map()
+
+        metadata = {
+            "binlog": binlogevent.next_binlog,
+            "logpos": binlogevent.packet.log_pos,
+            "schema": schema,
+            "table": table,
+            "event_time": binlogevent.timestamp,
+            "event": event
+        }
+
+        old_data = None
+        columns = None
         for row in binlogevent.rows:
-            column_map = table_type_map[schema_row][table_name]["column_type"]
+            if event == Operation.DELETE:
+                columns = row["values"]
+            elif event == Operation.UPDATE:
+                columns = row["after_values"]
+                old_data = row["before_values"]
+            elif event == Operation.INSERT:
+                columns = row["values"]
 
-    def skip_event(self, table, schema, binlogevent) -> bool:
-        """
-            Метод проверяет должен ли сработать event
+            column_map = table_type_map[schema][table]["column_type"]
 
-            :param table: Имя таблицы
-            :param schema: Схема
-            :param binlogevent: Event
-            :return: true or false
-            :rtype: bool
-        """
+            for column in columns:
+                type = column_map[column]
+
+                if type in self.special_data_types:
+                    # decode special types
+                    columns[column] = binascii.hexlify(columns[column]).decode()
+
+        parse_event = {
+            "metadata": metadata,
+            "columns": columns,
+            "old_data": old_data
+        }
+
+        batch_insert.append(parse_event)
+
+        if (len(batch_insert) >= self.batch_size):
+            pass
+            # insert batch to postgres
+
+    def get_event(self, binlogevent) -> Operation:
         if isinstance(binlogevent, DeleteRowsEvent):
             event = Operation.DELETE
         elif isinstance(binlogevent, UpdateRowsEvent):
             event = Operation.UPDATE
         else:
             event = Operation.INSERT
+        return event
 
+    def skip_event(self, table, schema, event) -> bool:
+        """
+            Метод проверяет должен ли сработать event
+
+            :param table: Имя таблицы
+            :param schema: Схема
+            :param event: Event
+            :return: true or false
+            :rtype: bool
+        """
         table_name = "%s.%s" % (schema, table)
         return (schema in self.skip_events[event]) or (table_name in self.skip_events[event])
 
