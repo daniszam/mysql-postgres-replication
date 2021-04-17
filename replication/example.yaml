@@ -1,0 +1,37 @@
+# configuration name
+example:
+  from:
+#   server name
+    mysql_1:
+      user: 'root'
+      password: 'root'
+      host: '127.0.0.1'
+      port: 3306
+      timeout: 10
+      charset: 'UTF-8'
+#     can add ignore table or schema
+      ignore:
+        schema:
+        table:
+#     filter to disable row copy
+      filter:
+#       schema name
+        public:
+#         table name
+          table_name:
+#           field name
+            id:
+#             type can use [more, less, equal, like]
+              more: 10
+              less: 50
+
+
+  to:
+    postgresql:
+      user: 'postgres'
+      password: 'postgres'
+      schema: 'public'
+      host: '127.0.0.1'
+      port: 5403
+#     can be true or false, true - init schema on start, false - need mapping to use
+      create_on_init: true
