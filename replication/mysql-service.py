@@ -1,4 +1,5 @@
 import binascii
+
 import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, WriteRowsEvent
@@ -13,7 +14,7 @@ class MySqlService(object):
     BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
     SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
-    def __init__(self, connection_conf) -> None:
+    def __init__(self, connection_conf_list: [Connection]) -> None:
         super().__init__()
         self.conn_buffered = None
         self.copy_max_memory = None
@@ -24,12 +25,12 @@ class MySqlService(object):
         }
         self.skip_tables = {}
         self.schema_replica = []
-        self.connection_conf = connection_conf
-        self.special_data_types = self.BLOB + self.special_data_types
+        self.connection_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
+        self.special_data_types = self.BLOB + self.SPECIAL
         self.batch_size = 10
 
-    def connection(self, connection_conf: Connection):
-        self.conn_buffered = pymysql.connect(
+    def init_connection(self, connection_conf: Connection):
+        return pymysql.connect(
             host=connection_conf.host,
             user=connection_conf.user,
             port=connection_conf.port,
@@ -38,9 +39,6 @@ class MySqlService(object):
             connect_timeout=connection_conf.timeout,
             cursorclass=pymysql.cursors.DictCursor
         )
-        self.charset = db_conn["charset"]
-        self.cursor_buffered = self.conn_buffered.cursor()
-        self.cursor_buffered_fallback = self.conn_buffered.cursor()
 
     def init_replica(self):
         self.__init_sync()
@@ -69,7 +67,6 @@ class MySqlService(object):
         # else:
         #     self.hexify = self.hexify_always + self.spatial_datatypes
 
-        self.connection()
         # self.pg_engine.connect_db()
         # self.schema_mappings = self.pg_engine.get_schema_mappings()
         # self.pg_engine.schema_tables = self.schema_tables
@@ -96,15 +93,15 @@ class MySqlService(object):
             slave_heartbeat=1,
         )
 
-        while True:
+        # while True:
 
-            for binlogevent in my_stream:
-                binlogevent.dump()
+        for binlogevent in my_stream:
+            binlogevent.dump()
 
-                for row in binlogevent.rows:
-                    print(row)
+            for row in binlogevent.rows:
+                print(row)
 
-        my_stream.close()
+        # my_stream.close()
 
     def parse_event(self, binlogevent):
         log_position = binlogevent.packet.log_pos
@@ -234,10 +231,12 @@ if __name__ == "__main__":
         port=3306,
         user='root',
         password='root',
-        charset='UTF-8',
+        charset='utf8',
         timeout=10
     )
 
-    service: MySqlService = MySqlService(connection)
+    service: MySqlService = MySqlService([connection])
 
     service.read_replica_stream()
+    while True:
+        pass
