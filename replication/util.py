@@ -57,21 +57,26 @@ def get_configuration(path: Path) -> {}:
         return configuration
 
 
-def get_connection(configuration: {}) -> Connection:
-    mysql_configuration = configuration['example']['from']['mysql_1']
-    connection = Connection(
-        host=mysql_configuration['host'],
-        user=mysql_configuration['user'],
-        port=mysql_configuration['port'],
-        password=mysql_configuration['password'],
-        timeout=mysql_configuration['timeout'],
-        charset=mysql_configuration['charset']
-    )
-    return connection
+def get_connections(configuration: {}, configuration_name: str) -> [Connection]:
+    mysql_configurations = configuration[configuration_name]['from']
+    mysql_db_names = mysql_configurations.keys()
+    connection_list: [Connection] = []
+    for mysql_db_name in mysql_db_names:
+        mysql_configuration = mysql_configurations[mysql_db_name]
+        connection = Connection(
+            host=mysql_configuration['host'],
+            user=mysql_configuration['user'],
+            port=mysql_configuration['port'],
+            password=mysql_configuration['password'],
+            timeout=mysql_configuration['timeout'],
+            charset=mysql_configuration['charset'],
+            name=mysql_db_name
+        )
+        connection_list.append(connection)
+    return connection_list
 
 
 logging.basicConfig(filename='example.log', encoding='utf-8', level=logging.DEBUG)
 path = get_path("example.yaml")
 configuration = get_configuration(path)
-connection = get_connection(configuration)
-print(connection)
+connections = get_connections(configuration, 'example')
