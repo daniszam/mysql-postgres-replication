@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 from replication.connection import Connection
+from replication.mysql import MySqlService
 
 type_dictionary = {
     'integer': 'integer',
@@ -70,13 +71,40 @@ def get_connections(configuration: {}, configuration_name: str) -> [Connection]:
             password=mysql_configuration['password'],
             timeout=mysql_configuration['timeout'],
             charset=mysql_configuration['charset'],
-            name=mysql_db_name
+            name=mysql_db_name,
+            server_id=mysql_configuration['server_id']
         )
         connection_list.append(connection)
     return connection_list
 
 
-logging.basicConfig(filename='example.log', encoding='utf-8', level=logging.DEBUG)
-path = get_path("example.yaml")
-configuration = get_configuration(path)
-connections = get_connections(configuration, 'example')
+# logging.basicConfig(filename='example.log', encoding='utf-8', level=logging.DEBUG)
+# path = get_path("example.yaml")
+# configuration = get_configuration(path)
+# connections = get_connections(configuration, 'example')
+
+
+if __name__ == "__main__":
+    connection = Connection(
+        host='127.0.0.1',
+        port=3306,
+        user='root',
+        password='root',
+        charset='utf8',
+        timeout=10,
+        server_id=1
+    )
+
+    connection_1 = Connection(
+        host='127.0.0.1',
+        port=3306,
+        user='root',
+        password='root',
+        charset='utf8',
+        timeout=10,
+        server_id=2
+    )
+
+    mysql_service: MySqlService = MySqlService([connection, connection_1], init_schema=False, schema_replica=['public'])
+    # print(service.get_table_type_map())
+    mysql_service.init()

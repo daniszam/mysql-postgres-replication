@@ -3,6 +3,7 @@ example:
   from:
 #   server name
     mysql_1:
+      server_id: 1
       user: 'root'
       password: 'root'
       host: '127.0.0.1'
@@ -10,6 +11,7 @@ example:
       timeout: 10
       charset: 'UTF-8'
 #     can add ignore table or schema
+      schema: ['public']
       ignore:
         schema:
         table:
@@ -25,6 +27,7 @@ example:
               more: 10
               less: 50
     mysql_2:
+      server_id: 2
       user: 'root'
       password: 'root'
       host: '127.0.0.1'
@@ -57,3 +60,4 @@ example:
       port: 5403
 #     can be true or false, true - init schema on start, false - need mapping to use
       create_on_init: true
+      charset: "utf8"
