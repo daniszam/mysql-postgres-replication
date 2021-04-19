@@ -1,6 +1,6 @@
 import binascii
+from multiprocessing import Process
 
-import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, WriteRowsEvent
 
@@ -14,7 +14,7 @@ class MySqlService(object):
     BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
     SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
-    def __init__(self, connection_conf_list: [Connection]) -> None:
+    def __init__(self, connection_conf_list: [Connection], init_schema: bool) -> None:
         super().__init__()
         self.conn_buffered = None
         self.copy_max_memory = None
@@ -23,22 +23,60 @@ class MySqlService(object):
             Operation.INSERT: [],
             Operation.DELETE: []
         }
+        self.init_schema_on_start = init_schema
         self.skip_tables = {}
         self.schema_replica = []
-        self.connection_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
+        self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
         self.special_data_types = self.BLOB + self.SPECIAL
         self.batch_size = 10
+        self.process_list = [Process]
 
-    def init_connection(self, connection_conf: Connection):
-        return pymysql.connect(
-            host=connection_conf.host,
-            user=connection_conf.user,
-            port=connection_conf.port,
-            password=connection_conf.password,
-            charset=connection_conf.charset,
-            connect_timeout=connection_conf.timeout,
-            cursorclass=pymysql.cursors.DictCursor
+    def init(self):
+        # create schema if need
+        if self.init_schema_on_start and len(self.stream_list) == 1:
+            self.init_schema()
+
+        self.start_listen()
+
+    def init_schema(self):
+        """
+        The method init schema from mysql db on postgres,
+        """
+        pass
+
+    def init_connection(self, connection_conf: Connection) -> BinLogStreamReader:
+        stream = BinLogStreamReader(
+            connection_settings={
+                "host": connection_conf.host,
+                "port": connection_conf.port,
+                "user": connection_conf.user,
+                "passwd": connection_conf.password,
+                "charset": connection_conf.charset,
+                "connect_timeout": connection_conf.timeout
+            },
+            server_id=connection_conf.server_id,
+            only_events=[DeleteRowsEvent, WriteRowsEvent, UpdateRowsEvent],
+            log_file="binlog.000001",
+            log_pos=2792,
+            auto_position=None,
+            resume_stream=True,
+            only_schemas="public",
+            slave_heartbeat=1,
         )
+        return stream
+
+    def start_listen(self):
+        for stream in self.stream_list:
+            process = Process(target=self.run, args=(stream,))
+            process.start()
+
+    def run(self, stream: BinLogStreamReader):
+        while True:
+            for binlogevent in stream:
+                binlogevent.dump()
+
+                for row in binlogevent.rows:
+                    print(row)
 
     def init_replica(self):
         self.__init_sync()
@@ -232,11 +270,20 @@ if __name__ == "__main__":
         user='root',
         password='root',
         charset='utf8',
-        timeout=10
+        timeout=10,
+        server_id=1
     )
 
-    service: MySqlService = MySqlService([connection])
+    connection_1 = Connection(
+        host='127.0.0.1',
+        port=3306,
+        user='root',
+        password='root',
+        charset='utf8',
+        timeout=10,
+        server_id=2
+    )
 
-    service.read_replica_stream()
-    while True:
-        pass
+    service: MySqlService = MySqlService([connection, connection_1], init_schema=False)
+
+    service.init()
