@@ -7,4 +7,6 @@ class Query(object):
                      "FROM information_schema.COLUMNS " \
                      "WHERE  table_schema=%s AND table_name=%s ORDER BY ordinal_position ;"
 
-    POSTGRES_INSERT = "INSERT INTO {}.{} (%s) VALUES (%s)";
+    POSTGRES_INSERT = "INSERT INTO {}.{} (%s) VALUES (%s);"
+    POSTGRES_DELETE = "DELETE FROM {}.{} WHERE %s;"
+    POSTGRES_UPDATE = "UPDATE {}.{} SET %s WHERE %s;"

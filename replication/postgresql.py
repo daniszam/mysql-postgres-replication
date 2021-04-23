@@ -1,7 +1,3 @@
-import datetime
-import decimal
-import json
-
 import psycopg2
 from psycopg2 import sql
 
@@ -9,20 +5,6 @@ from replication.batch import Batch
 from replication.connection import Connection
 from replication.operation import Operation
 from replication.query import Query
-
-
-class pg_encoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime.time) or \
-                isinstance(obj, datetime.datetime) or \
-                isinstance(obj, datetime.date) or \
-                isinstance(obj, decimal.Decimal) or \
-                isinstance(obj, datetime.timedelta) or \
-                isinstance(obj, set) or \
-                isinstance(obj, frozenset) or \
-                isinstance(obj, bytes):
-            return str(obj)
-        return json.JSONEncoder.default(self, obj)
 
 
 class PostgreSqlService(object):
@@ -54,18 +36,28 @@ class PostgreSqlService(object):
             if metadata.event == Operation.INSERT:
                 self.insert(schema=metadata.schema, table=metadata.table, data=batch.new_data)
             elif metadata.event == Operation.UPDATE:
-                self.update()
+                self.update(schema=metadata.schema, table=metadata.table, old_data=batch.old_data,
+                            new_data=batch.new_data)
             elif metadata.event == Operation.DELETE:
-                self.delete()
+                print(batch)
+                self.delete(schema=metadata.schema, table=metadata.table, data=batch.new_data)
 
+    # TODO add batch exception handling
     def insert(self, schema, table, data):
         query = Query.POSTGRES_INSERT % (" ,".join([str(elem) for elem in data.keys()]),
                                          ' ,'.join(["\'" + str(elem) + "\'" for elem in data.values()]))
         query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
         self.pgsql_cur.execute(query)
 
-    def delete(self):
-        pass
+    def delete(self, schema, table, data):
+        where_statement = ' and '.join("{}=%s".format(key) for key in data.keys())
+        query = Query.POSTGRES_DELETE % where_statement
+        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+        self.pgsql_cur.execute(query, list(data.values()))
 
-    def update(self):
-        pass
+    def update(self, schema, table, old_data, new_data):
+        set_statement = ', '.join("{}=%s".format(key) for key in new_data.keys())
+        where_statement = ' and '.join("{}=%s".format(key) for key in old_data.keys())
+        query = Query.POSTGRES_UPDATE % (set_statement, where_statement)
+        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+        self.pgsql_cur.execute(query, list(new_data.values()) + list(old_data.values()))
