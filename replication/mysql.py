@@ -5,7 +5,9 @@ import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, WriteRowsEvent
 
+from replication.batch import Batch
 from replication.connection import Connection
+from replication.metadata import Metadata
 from replication.operation import Operation
 from replication.postgresql import PostgreSqlService
 from replication.query import Query
@@ -69,8 +71,9 @@ class MySqlService(object):
 
     def start_listen(self):
         for stream, connection_conf in self.stream_list:
-            process = Process(target=self.run, args=(stream, connection_conf, ))
-            process.start()
+            self.run(stream, connection_conf)
+            # process = Process(target=self.run, args=(stream, connection_conf, ))
+            # process.start()
 
     def run(self, stream: BinLogStreamReader, connection_conf):
         while True:
@@ -117,19 +120,20 @@ class MySqlService(object):
         schema = binlogevent.schema
         batch_insert = []
 
+        print(table)
         event = self.get_event(binlogevent)
         if self.skip_event(table, schema, event) or self.ignore_table(table, schema):
             return
 
         table_type_map = self.get_table_type_map(connection_conf)
 
-        metadata = {
-            "logpos": binlogevent.packet.log_pos,
-            "schema": schema,
-            "table": table,
-            "event_time": binlogevent.timestamp,
-            "event": "insert",
-        }
+        metadata = Metadata(
+            logpos=binlogevent.packet.log_pos,
+            schema=schema,
+            table=table,
+            event_time=binlogevent.timestamp,
+            event=event,
+        )
 
         old_data = None
         columns = None
@@ -142,7 +146,13 @@ class MySqlService(object):
             elif event == Operation.INSERT:
                 columns = row["values"]
 
-            print(table_type_map)
+            table_map = table_type_map[schema]
+
+            for table_name in table_map.keys():
+                if table == table_name.lower():
+                    table = table_name
+                    metadata.table = table_name
+
             column_map = table_type_map[schema][table]["column_type"]
 
             for column in columns:
@@ -152,15 +162,16 @@ class MySqlService(object):
                     # decode special types
                     columns[column] = binascii.hexlify(columns[column]).decode()
 
-        parse_event = {
-            "metadata": metadata,
-            "columns": columns,
-            "old_data": old_data
-        }
+        batch = Batch(
+            metadata=metadata,
+            old_data=old_data,
+            new_data=columns
+        )
 
-        batch_insert.append(parse_event)
+        batch_insert.append(batch)
 
-        if (len(batch_insert) >= self.batch_size):
+        if len(batch_insert) >= self.batch_size:
+            # print(batch.new_data)
             connection_pos = Connection(
                 host='127.0.0.1',
                 port=5433,
@@ -174,8 +185,7 @@ class MySqlService(object):
 
             postgresql_service: PostgreSqlService = PostgreSqlService(connection_pos)
             postgresql_service.init_connection()
-            postgresql_service.write_batch(batch_insert)
-            # insert batch to postgres
+            postgresql_service.parse_batch(batch_insert)
 
     def get_event(self, binlogevent) -> Operation:
         if isinstance(binlogevent, DeleteRowsEvent):
@@ -228,7 +238,7 @@ class MySqlService(object):
                 table_dict = {}
                 table_dict["table_charset"] = table_charset
                 table_dict["column_type"] = column_type
-                table_map[table["table_name"].lower()] = table_dict
+                table_map[table["table_name"]] = table_dict
 
             table_type_map[schema] = table_map
             table_map = {}

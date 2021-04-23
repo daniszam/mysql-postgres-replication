@@ -1,12 +1,14 @@
 import datetime
 import decimal
-import io
 import json
 
 import psycopg2
 from psycopg2 import sql
 
+from replication.batch import Batch
 from replication.connection import Connection
+from replication.operation import Operation
+from replication.query import Query
 
 
 class pg_encoder(json.JSONEncoder):
@@ -46,52 +48,21 @@ class PostgreSqlService(object):
             self.pgsql_conn.set_session(autocommit=True)
             self.pgsql_cur = self.pgsql_conn.cursor()
 
-    def write_batch(self, group_insert):
-        csv_file = io.StringIO()
-        insert_list = []
-        for row_data in group_insert:
-            global_data = row_data["metadata"]
-            event_after = row_data["columns"]
-            event_before = row_data["old_data"]
-            # log_table = global_data["log_table"]
-            insert_list.append(self.pgsql_cur.mogrify("%s,%s,%s,%s,%s,%s,%s", (
-                global_data["table"],
-                global_data["schema"],
-                str(global_data["event"]),
-                global_data["logpos"],
-                json.dumps(event_after, cls=pg_encoder),
-                json.dumps(event_before, cls=pg_encoder),
-                global_data["event_time"])))
+    def parse_batch(self, batch_list: [Batch]):
+        for batch in batch_list:
+            metadata = batch.metadata
+            if metadata.event == Operation.INSERT:
+                self.insert(schema=metadata.schema, table=metadata.table, data=batch.new_data)
+            elif metadata.event == Operation.UPDATE:
+                self.update()
+            elif metadata.event == Operation.DELETE:
+                self.delete()
 
-        csv_data = b"\n".join(insert_list).decode()
-        csv_file.write(csv_data)
-        csv_file.seek(0)
-        try:
-            sql_copy = sql.SQL("""
-                COPY "sch_chameleon".{}
-                    (
-                        v_table_name,
-                        v_schema_name,
-                        enm_binlog_event,
-                        i_binlog_position,
-                        jsb_event_after,
-                        jsb_event_before,
-                        i_my_event_time
-                    )
-                FROM
-                    STDIN
-                    WITH NULL 'NULL'
-                    CSV QUOTE ''''
-                    DELIMITER ','
-                    ESCAPE ''''
-                ;
-            """).format(sql.Identifier("t_log_replica_mysql_1"))
-            self.pgsql_cur.copy_expert(sql_copy, csv_file)
-        except psycopg2.Error as e:
-            print(e)
-
-    def insert(self, schema, table, data, column_list):
-        pass
+    def insert(self, schema, table, data):
+        query = Query.POSTGRES_INSERT % (" ,".join([str(elem) for elem in data.keys()]),
+                                         ' ,'.join(["\'" + str(elem) + "\'" for elem in data.values()]))
+        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+        self.pgsql_cur.execute(query)
 
     def delete(self):
         pass
