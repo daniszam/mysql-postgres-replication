@@ -1,6 +1,6 @@
 class Connection(object):
 
-    def __init__(self, host, user, port, password, charset, timeout, server_id, name=None, database=None):
+    def __init__(self, host, user, port, password, charset, timeout, server_id=None, name=None, database=None):
         super().__init__()
         self.host = host
         self.user = user

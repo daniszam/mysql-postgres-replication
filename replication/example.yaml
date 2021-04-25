@@ -1,5 +1,6 @@
 # configuration name
 example:
+  error_file: './mysql-postgres-replication-error.json'
   from:
 #   server name
     mysql_1:
@@ -9,7 +10,7 @@ example:
       host: '127.0.0.1'
       port: 3306
       timeout: 10
-      charset: 'UTF-8'
+      charset: 'utf8'
 #     can add ignore table or schema
       schema: ['public']
       ignore:
@@ -53,11 +54,13 @@ example:
 
   to:
     postgresql:
+      database: 'postgres'
       user: 'postgres'
       password: 'postgres'
       schema: 'public'
       host: '127.0.0.1'
-      port: 5403
-#     can be true or false, true - init schema on start, false - need mapping to use
+      port: 5433
+      timeout: 10
+      #     can be true or false, true - init schema on start, false - need mapping to use
       create_on_init: true
-      charset: "utf8"
+      charset: 'utf8'

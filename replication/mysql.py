@@ -7,6 +7,7 @@ from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, Write
 
 from replication.batch import Batch
 from replication.connection import Connection
+from replication.error_writer import ErrorWriter
 from replication.metadata import Metadata
 from replication.operation import Operation
 from replication.postgresql import PostgreSqlService
@@ -18,7 +19,8 @@ class MySqlService(object):
     BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
     SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
-    def __init__(self, connection_conf_list: [Connection], init_schema: bool, schema_replica: []) -> None:
+    def __init__(self, connection_conf_list: [Connection], init_schema: bool, schema_replica: [],
+                 postgres_conf: Connection, error_writer: ErrorWriter) -> None:
         super().__init__()
         self.conn_buffered = None
         self.copy_max_memory = None
@@ -33,6 +35,9 @@ class MySqlService(object):
         self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
         self.special_data_types = self.BLOB + self.SPECIAL
         self.batch_size = 0
+        self.postgres_service: PostgreSqlService
+        self.postgres_conf = postgres_conf
+        self.error_writer = error_writer
         self.process_list = [Process]
 
     def init(self):
@@ -71,11 +76,12 @@ class MySqlService(object):
 
     def start_listen(self):
         for stream, connection_conf in self.stream_list:
-            self.run(stream, connection_conf)
-            # process = Process(target=self.run, args=(stream, connection_conf, ))
-            # process.start()
+            # self.run(stream, connection_conf)
+            process = Process(target=self.run, args=(stream, connection_conf,))
+            process.start()
 
     def run(self, stream: BinLogStreamReader, connection_conf):
+        self.init_postgresql()
         while True:
             for binlogevent in stream:
                 binlogevent.dump()
@@ -83,6 +89,11 @@ class MySqlService(object):
 
     def init_replica(self):
         self.__init_sync()
+
+    def init_postgresql(self):
+        self.postgres_service: PostgreSqlService = PostgreSqlService(connection=self.postgres_conf,
+                                                                     error_writer=self.error_writer)
+        self.postgres_service.init_connection()
 
     def __init_sync(self):
         """
@@ -171,21 +182,7 @@ class MySqlService(object):
         batch_insert.append(batch)
 
         if len(batch_insert) >= self.batch_size:
-            # print(batch.new_data)
-            connection_pos = Connection(
-                host='127.0.0.1',
-                port=5433,
-                user='postgres',
-                password='postgres',
-                charset='utf8',
-                timeout=10,
-                server_id=2,
-                database="postgres"
-            )
-
-            postgresql_service: PostgreSqlService = PostgreSqlService(connection_pos)
-            postgresql_service.init_connection()
-            postgresql_service.parse_batch(batch_insert)
+            self.postgres_service.parse_batch(batch_insert)
 
     def get_event(self, binlogevent) -> Operation:
         if isinstance(binlogevent, DeleteRowsEvent):

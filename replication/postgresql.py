@@ -1,19 +1,24 @@
+import datetime
+import logging
+
 import psycopg2
 from psycopg2 import sql
 
 from replication.batch import Batch
 from replication.connection import Connection
+from replication.error_writer import ErrorWriter
 from replication.operation import Operation
 from replication.query import Query
 
 
 class PostgreSqlService(object):
 
-    def __init__(self, connection: Connection) -> None:
+    def __init__(self, connection: Connection, error_writer: ErrorWriter) -> None:
         super().__init__()
         self.connection = connection
         self.pgsql_conn = None
         self.pgsql_cur = None
+        self.error_writer = error_writer
 
     def init_connection(self):
         if self.connection and not self.pgsql_conn:
@@ -44,20 +49,32 @@ class PostgreSqlService(object):
 
     # TODO add batch exception handling
     def insert(self, schema, table, data):
-        query = Query.POSTGRES_INSERT % (" ,".join([str(elem) for elem in data.keys()]),
-                                         ' ,'.join(["\'" + str(elem) + "\'" for elem in data.values()]))
-        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
-        self.pgsql_cur.execute(query)
+        try:
+            query = Query.POSTGRES_INSERT % (" ,".join([str(elem) for elem in data.keys()]),
+                                             ' ,'.join(["\'" + str(elem) + "\'" for elem in data.values()]))
+            query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+            self.pgsql_cur.execute(query)
+        except BaseException as e:
+            logging.error('Could not insert operation exec data=%s' % data, e)
+            self.error_writer.error(e, 'Could not insert operation exec', datetime.datetime.now(), data)
 
     def delete(self, schema, table, data):
-        where_statement = ' and '.join("{}=%s".format(key) for key in data.keys())
-        query = Query.POSTGRES_DELETE % where_statement
-        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
-        self.pgsql_cur.execute(query, list(data.values()))
+        try:
+            where_statement = ' and '.join("{}=%s".format(key) for key in data.keys())
+            query = Query.POSTGRES_DELETE % where_statement
+            query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+            self.pgsql_cur.execute(query, list(data.values()))
+        except BaseException as e:
+            logging.error('Could not delete operation exec data=%s' % data, e)
+            self.error_writer.error(e, 'Could not delete operation exec', datetime.datetime.now(), data)
 
     def update(self, schema, table, old_data, new_data):
-        set_statement = ', '.join("{}=%s".format(key) for key in new_data.keys())
-        where_statement = ' and '.join("{}=%s".format(key) for key in old_data.keys())
-        query = Query.POSTGRES_UPDATE % (set_statement, where_statement)
-        query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
-        self.pgsql_cur.execute(query, list(new_data.values()) + list(old_data.values()))
+        try:
+            set_statement = ', '.join("{}=%s".format(key) for key in new_data.keys())
+            where_statement = ' and '.join("{}=%s".format(key) for key in old_data.keys())
+            query = Query.POSTGRES_UPDATE % (set_statement, where_statement)
+            query = sql.SQL(query).format(sql.Identifier(schema), sql.Identifier(table))
+            self.pgsql_cur.execute(query, list(new_data.values()) + list(old_data.values()))
+        except BaseException as e:
+            logging.error('Could not update operation exec data=%s' % new_data, e)
+            self.error_writer.error(e, 'Could not update operation exec', datetime.datetime.now(), data)
