@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 from replication.connection import Connection
+from replication.error_writer import ErrorWriter
 from replication.mysql import MySqlService
 
 type_dictionary = {
@@ -58,7 +59,30 @@ def get_configuration(path: Path) -> {}:
         return configuration
 
 
-def get_connections(configuration: {}, configuration_name: str) -> [Connection]:
+def get_error_writer(configuration: {}, configuration_name):
+    error_file = Path(configuration[configuration_name]['error_file'])
+    return ErrorWriter(error_file)
+
+
+def postgresql_connection(configuration: {}, configuration_name) -> Connection:
+    postgresql_conf = configuration[configuration_name]['to']
+    postgresql_db = list(postgresql_conf.keys())[0]
+
+    postgresql_conf = postgresql_conf[postgresql_db]
+    connection = Connection(
+        host=postgresql_conf['host'],
+        user=postgresql_conf['user'],
+        port=postgresql_conf['port'],
+        password=postgresql_conf['password'],
+        timeout=postgresql_conf['timeout'],
+        charset=postgresql_conf['charset'],
+        database=postgresql_conf['database'],
+        name=postgresql_db,
+    )
+    return connection
+
+
+def mysql_connections(configuration: {}, configuration_name: str) -> [Connection]:
     mysql_configurations = configuration[configuration_name]['from']
     mysql_db_names = mysql_configurations.keys()
     connection_list: [Connection] = []
@@ -78,33 +102,15 @@ def get_connections(configuration: {}, configuration_name: str) -> [Connection]:
     return connection_list
 
 
-# logging.basicConfig(filename='example.log', encoding='utf-8', level=logging.DEBUG)
-# path = get_path("example.yaml")
-# configuration = get_configuration(path)
-# connections = get_connections(configuration, 'example')
-
-
 if __name__ == "__main__":
-    connection = Connection(
-        host='127.0.0.1',
-        port=3306,
-        user='root',
-        password='root',
-        charset='utf8',
-        timeout=10,
-        server_id=1
-    )
+    CONF_NAME = 'example'
+    logging.basicConfig(filename='example.log', level=logging.DEBUG)
+    path = get_path("example.yaml")
+    configuration = get_configuration(path)
+    connections = mysql_connections(configuration, CONF_NAME)
+    postgres_conn = postgresql_connection(configuration, CONF_NAME)
+    error_writer = get_error_writer(configuration, CONF_NAME)
 
-    connection_1 = Connection(
-        host='127.0.0.1',
-        port=3306,
-        user='root',
-        password='root',
-        charset='utf8',
-        timeout=10,
-        server_id=2
-    )
-
-    mysql_service: MySqlService = MySqlService([connection, connection_1], init_schema=False, schema_replica=['public'])
-    # print(service.get_table_type_map())
+    mysql_service: MySqlService = MySqlService(connections, init_schema=False, schema_replica=['public'],
+                                               postgres_conf=postgres_conn, error_writer=error_writer)
     mysql_service.init()
