@@ -44,7 +44,6 @@ class PostgreSqlService(object):
                 self.update(schema=metadata.schema, table=metadata.table, old_data=batch.old_data,
                             new_data=batch.new_data)
             elif metadata.event == Operation.DELETE:
-                print(batch)
                 self.delete(schema=metadata.schema, table=metadata.table, data=batch.new_data)
 
     # TODO add batch exception handling

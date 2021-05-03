@@ -11,8 +11,8 @@ example:
       port: 3306
       timeout: 10
       charset: 'utf8'
+      schema: [ 'public' ]
 #     can add ignore table or schema
-      schema: ['public']
       ignore:
         schema:
         table:
@@ -21,12 +21,14 @@ example:
 #       schema name
         public:
 #         table name
-          table_name:
-#           field name
+          MyGuests:
+            #           field name
             id:
-#             type can use [more, less, equal, like]
-              more: 10
-              less: 50
+              #             type can use [more, less, equal, in]
+              more: 0
+              less: 30
+            email:
+              equal: 'danis.zamaliev@yandex.ru'
     mysql_2:
       server_id: 2
       user: 'root'
@@ -35,19 +37,13 @@ example:
       port: 3306
       timeout: 10
       charset: 'UTF-8'
-      #     can add ignore table or schema
       ignore:
         schema:
         table:
-      #     filter to disable row copy
       filter:
-        #       schema name
         public:
-          #         table name
           table_name:
-            #           field name
             id:
-              #             type can use [more, less, equal, like]
               more: 10
               less: 50
 

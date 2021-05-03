@@ -19,8 +19,12 @@ class MySqlService(object):
     BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
     SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
-    def __init__(self, connection_conf_list: [Connection], init_schema: bool, schema_replica: [],
-                 postgres_conf: Connection, error_writer: ErrorWriter) -> None:
+    def __init__(self, connection_conf_list: [Connection],
+                 init_schema: bool,
+                 schema_replica: [],
+                 postgres_conf: Connection,
+                 error_writer: ErrorWriter,
+                 filter_map: {}) -> None:
         super().__init__()
         self.conn_buffered = None
         self.copy_max_memory = None
@@ -31,6 +35,7 @@ class MySqlService(object):
         }
         self.init_schema_on_start = init_schema
         self.skip_tables = {}
+        self.filter_map = filter_map
         self.schema_replica = schema_replica
         self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
         self.special_data_types = self.BLOB + self.SPECIAL
@@ -68,6 +73,7 @@ class MySqlService(object):
             log_file="binlog.000001",
             log_pos=2792,
             auto_position=None,
+            blocking=True,
             resume_stream=True,
             only_schemas="public",
             slave_heartbeat=1,
@@ -80,11 +86,10 @@ class MySqlService(object):
             process = Process(target=self.run, args=(stream, connection_conf,))
             process.start()
 
-    def run(self, stream: BinLogStreamReader, connection_conf):
+    def run(self, stream: BinLogStreamReader, connection_conf: Connection):
         self.init_postgresql()
         while True:
             for binlogevent in stream:
-                binlogevent.dump()
                 self.parse_event(binlogevent, connection_conf)
 
     def init_replica(self):
@@ -126,12 +131,11 @@ class MySqlService(object):
     def __init_mysql_replica(self):
         self.init_replica()
 
-    def parse_event(self, binlogevent, connection_conf):
+    def parse_event(self, binlogevent, connection_conf: Connection):
         table = binlogevent.table
         schema = binlogevent.schema
         batch_insert = []
 
-        print(table)
         event = self.get_event(binlogevent)
         if self.skip_event(table, schema, event) or self.ignore_table(table, schema):
             return
@@ -158,11 +162,13 @@ class MySqlService(object):
                 columns = row["values"]
 
             table_map = table_type_map[schema]
-
             for table_name in table_map.keys():
                 if table == table_name.lower():
                     table = table_name
                     metadata.table = table_name
+
+            if not self.filter(connection_conf.name, table, schema, columns):
+                continue
 
             column_map = table_type_map[schema][table]["column_type"]
 
@@ -192,6 +198,30 @@ class MySqlService(object):
         else:
             event = Operation.INSERT
         return event
+
+    def filter(self, conf_name, table, schema, columns: {}) -> bool:
+        try:
+            table_filter = self.filter_map[conf_name][schema][table]
+        except KeyError:
+            return True
+        if table_filter is not None:
+            for field in columns.keys():
+                if field in table_filter:
+                    field_filters = table_filter[field]
+                    for filter in field_filters.keys():
+                        if filter == 'more':
+                            if columns[field] <= field_filters['more']:
+                                return False
+                        if filter == 'less':
+                            if columns[field] >= field_filters['less']:
+                                return False
+                        if filter == 'equal':
+                            if columns[field] != field_filters['equal']:
+                                return False
+                        if filter == 'in':
+                            if columns[field] not in field_filters['in']:
+                                return False
+        return True
 
     def skip_event(self, table, schema, event) -> bool:
         table_name = "%s.%s" % (schema, table)

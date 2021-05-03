@@ -82,6 +82,16 @@ def postgresql_connection(configuration: {}, configuration_name) -> Connection:
     return connection
 
 
+def filters(configuration: {}, configuration_name: str) -> {}:
+    mysql_configurations = configuration[configuration_name]['from']
+    mysql_db_names = mysql_configurations.keys()
+    filters = {}
+    for mysql_db_name in mysql_db_names:
+        mysql_configuration = mysql_configurations[mysql_db_name]
+        filters[mysql_db_name] = mysql_configuration['filter']
+    return filters
+
+
 def mysql_connections(configuration: {}, configuration_name: str) -> [Connection]:
     mysql_configurations = configuration[configuration_name]['from']
     mysql_db_names = mysql_configurations.keys()
@@ -108,9 +118,11 @@ if __name__ == "__main__":
     path = get_path("example.yaml")
     configuration = get_configuration(path)
     connections = mysql_connections(configuration, CONF_NAME)
+    filter_map = filters(configuration, CONF_NAME)
     postgres_conn = postgresql_connection(configuration, CONF_NAME)
     error_writer = get_error_writer(configuration, CONF_NAME)
 
     mysql_service: MySqlService = MySqlService(connections, init_schema=False, schema_replica=['public'],
-                                               postgres_conf=postgres_conn, error_writer=error_writer)
+                                               postgres_conf=postgres_conn, error_writer=error_writer,
+                                               filter_map=filter_map)
     mysql_service.init()
