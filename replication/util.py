@@ -1,4 +1,9 @@
 import logging
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 from pathlib import Path
 
 import yaml
@@ -112,17 +117,31 @@ def mysql_connections(configuration: {}, configuration_name: str) -> [Connection
     return connection_list
 
 
+def mysql_schemas(configuration: {}, configuration_name: str) -> []:
+    mysql_configurations = configuration[configuration_name]['from']
+    mysql_db_names = mysql_configurations.keys()
+    schemas: [] = []
+    for mysql_db_name in mysql_db_names:
+        mysql_configuration = mysql_configurations[mysql_db_name]
+        schemas = schemas + mysql_configuration['schema']
+    return schemas
+
+
 if __name__ == "__main__":
-    CONF_NAME = 'example'
-    logging.basicConfig(filename='example.log', level=logging.DEBUG)
-    path = get_path("example.yaml")
+    logging.basicConfig(level=logging.DEBUG)
+    CONF_NAME = os.getenv("CONFIGURATION_FILE", "example")
+    config_path = os.getenv("CONFIGURATION_FILE", "example.yaml")
+    logging.info('read file %s', config_path)
+    path = get_path(config_path)
     configuration = get_configuration(path)
+    logging.info('read configuration %s', configuration)
     connections = mysql_connections(configuration, CONF_NAME)
     filter_map = filters(configuration, CONF_NAME)
+    schemas = mysql_schemas(configuration, CONF_NAME)
     postgres_conn = postgresql_connection(configuration, CONF_NAME)
     error_writer = get_error_writer(configuration, CONF_NAME)
-
-    mysql_service: MySqlService = MySqlService(connections, init_schema=False, schema_replica=['public'],
+    logging.info('start creating services')
+    mysql_service: MySqlService = MySqlService(connections, init_schema=False, schema_replica=schemas,
                                                postgres_conf=postgres_conn, error_writer=error_writer,
                                                filter_map=filter_map)
     mysql_service.init()

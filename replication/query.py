@@ -10,3 +10,5 @@ class Query(object):
     POSTGRES_INSERT = "INSERT INTO {}.{} (%s) VALUES (%s);"
     POSTGRES_DELETE = "DELETE FROM {}.{} WHERE %s;"
     POSTGRES_UPDATE = "UPDATE {}.{} SET %s WHERE %s;"
+
+    SELECT_TABLE_BY_SCHEMA = "SELECT table_name as table_name FROM information_schema.TABLES WHERE table_type='BASE TABLE' AND table_schema=%s;"

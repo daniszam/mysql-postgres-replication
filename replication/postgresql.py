@@ -76,4 +76,7 @@ class PostgreSqlService(object):
             self.pgsql_cur.execute(query, list(new_data.values()) + list(old_data.values()))
         except BaseException as e:
             logging.error('Could not update operation exec data=%s' % new_data, e)
-            self.error_writer.error(e, 'Could not update operation exec', datetime.datetime.now(), data)
+            self.error_writer.error(e, 'Could not update operation exec', datetime.datetime.now(), new_data)
+
+    def check_postgis(self):
+        return self.pgsql_cur.check_posgis()

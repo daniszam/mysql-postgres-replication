@@ -1,4 +1,6 @@
 import binascii
+import datetime
+import logging
 from multiprocessing import Process
 
 import pymysql
@@ -17,7 +19,7 @@ from replication.query import Query
 class MySqlService(object):
     # special data types
     BLOB = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary']
-    SPECIAL = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
+    GEOMETRY = ['point', 'geometry', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'geometrycollection']
 
     def __init__(self, connection_conf_list: [Connection],
                  init_schema: bool,
@@ -38,9 +40,10 @@ class MySqlService(object):
         self.filter_map = filter_map
         self.schema_replica = schema_replica
         self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
-        self.special_data_types = self.BLOB + self.SPECIAL
+        self.special_data_types = self.BLOB + self.GEOMETRY
         self.batch_size = 0
         self.postgres_service: PostgreSqlService
+        self.mapping = {}
         self.postgres_conf = postgres_conf
         self.error_writer = error_writer
         self.process_list = [Process]
@@ -52,20 +55,16 @@ class MySqlService(object):
 
         self.start_listen()
 
-    def init_schema(self):
-        """
-        The method init schema from mysql db on postgres,
-        """
-        pass
 
     def init_connection(self, connection_conf: Connection) -> (BinLogStreamReader, Connection):
+        logging.debug('start init replica')
         stream = BinLogStreamReader(
             connection_settings={
                 "host": connection_conf.host,
                 "port": connection_conf.port,
                 "user": connection_conf.user,
                 "passwd": connection_conf.password,
-                "charset": connection_conf.charset,
+                "charset": "utf8",
                 "connect_timeout": connection_conf.timeout
             },
             server_id=connection_conf.server_id,
@@ -75,21 +74,23 @@ class MySqlService(object):
             auto_position=None,
             blocking=True,
             resume_stream=True,
-            only_schemas="public",
+            only_schemas=self.schema_replica,
             slave_heartbeat=1,
         )
         return stream, connection_conf
 
     def start_listen(self):
         for stream, connection_conf in self.stream_list:
-            # self.run(stream, connection_conf)
+            logging.debug('start listen new events')
             process = Process(target=self.run, args=(stream, connection_conf,))
             process.start()
 
     def run(self, stream: BinLogStreamReader, connection_conf: Connection):
+        logging.basicConfig(level=logging.DEBUG)
         self.init_postgresql()
         while True:
             for binlogevent in stream:
+                logging.debug('got a new event')
                 self.parse_event(binlogevent, connection_conf)
 
     def init_replica(self):
@@ -105,28 +106,10 @@ class MySqlService(object):
             The method calls the common steps required to initialise the database connections and
             class attributes within sync_tables,refresh_schema and init_replica.
         """
-        # try:
-        #     self.source_config = self.sources[self.source]
-        # except KeyError:
-        #     self.logger.error("The source %s doesn't exists " % (self.source))
-        #     sys.exit()
         self.out_dir = "/tmp"
         self.copy_mode = 'file'
-        # self.pg_engine.lock_timeout = self.source_config["lock_timeout"]
-        # self.pg_engine.grant_select_to = self.source_config["grant_select_to"]
-        # if "keep_existing_schema" in self.sources[self.source]:
-        #     self.keep_existing_schema = self.sources[self.source]["keep_existing_schema"]
-        # else:
-        #     self.keep_existing_schema = False
         self.copy_max_memory = 300 * 1024 * 1024  # 300mb
-        # if self.postgis_present:
-        #     self.hexify = self.hexify_always
-        # else:
-        #     self.hexify = self.hexify_always + self.spatial_datatypes
 
-        # self.pg_engine.connect_db()
-        # self.schema_mappings = self.pg_engine.get_schema_mappings()
-        # self.pg_engine.schema_tables = self.schema_tables
 
     def __init_mysql_replica(self):
         self.init_replica()
@@ -135,9 +118,11 @@ class MySqlService(object):
         table = binlogevent.table
         schema = binlogevent.schema
         batch_insert = []
+        logging.debug('event schema:%s table:%s', schema, table)
 
         event = self.get_event(binlogevent)
         if self.skip_event(table, schema, event) or self.ignore_table(table, schema):
+            logging.debug('event will be skipped')
             return
 
         table_type_map = self.get_table_type_map(connection_conf)
@@ -168,16 +153,24 @@ class MySqlService(object):
                     metadata.table = table_name
 
             if not self.filter(connection_conf.name, table, schema, columns):
+                logging.debug('event will be skipped by filter')
                 continue
 
             column_map = table_type_map[schema][table]["column_type"]
 
             for column in columns:
                 type = column_map[column]
-
+                logging.debug('start parsing event')
                 if type in self.special_data_types:
                     # decode special types
-                    columns[column] = binascii.hexlify(columns[column]).decode()
+                    hex_value = binascii.hexlify(columns[column]).decode()
+                    columns[column] = binascii.unhexlify(hex_value).decode()
+                elif type in self.BLOB and isinstance(old_data[column], bytes):
+                    columns[column] = ''
+                elif type == 'json':
+                    columns[column] = self.parse_dict(old_data[column], connection_conf.charset)
+                elif type in self.GEOMETRY and self.postgres_service.check_postgis():
+                    columns[column] = self.get_text_geo(old_data[column])
 
         batch = Batch(
             metadata=metadata,
@@ -185,12 +178,198 @@ class MySqlService(object):
             new_data=columns
         )
 
+        logging.debug('add event to a batch %s', batch)
         batch_insert.append(batch)
 
         if len(batch_insert) >= self.batch_size:
+            logging.debug('send batch to postgres service')
             self.postgres_service.parse_batch(batch_insert)
 
+    def sync_tables(self):
+        logging.info("Starting sync tables for source %s" % self.source)
+        self.__init_sync()
+        self.get_table_list()
+        self.create_destination_schemas()
+        try:
+            self.pg_engine.schema_loading = self.schema_loading
+            self.pg_engine.schema_tables = self.schema_tables
+            if self.keep_existing_schema:
+                self.disconnect_db_buffered()
+                self.__copy_tables()
+            else:
+                self.create_destination_tables()
+                self.disconnect_db_buffered()
+                self.__copy_tables()
+                self.pg_engine.grant_select()
+                self.pg_engine.swap_tables()
+                self.drop_loading_schemas()
+            self.pg_engine.set_source_status("synced")
+            self.connect_db_buffered()
+            master_end = self.get_master_coordinates()
+            self.disconnect_db_buffered()
+            self.pg_engine.set_source_highwatermark(master_end, consistent=False)
+            self.pg_engine.cleanup_table_events()
+            notifier_message = "the sync for tables %s in source %s is complete" % (self.tables, self.source)
+            self.notifier.send_message(notifier_message, 'info')
+            self.logger.info(notifier_message)
+        except Exception as e:
+            notifier_message = "the move data for tables %s in source %s failed" % (self.tables, self.source)
+            self.error_writer.error(e, notifier_message, datetime.datetime.now(), None)
+            raise
+
+    def get_table_list(self, cursor_buffered):
+        sql_tables = Query.SELECT_TABLE_BY_SCHEMA
+        schema_tables = []
+        for schema in self.schema_replica:
+            cursor_buffered.execute(sql_tables, (schema))
+            table_list = [table["table_name"] for table in cursor_buffered.fetchall()]
+            try:
+                skip_tables = self.skip_tables[schema]
+                if len(skip_tables) > 0:
+                    table_list = [table for table in table_list if table not in skip_tables]
+            except KeyError:
+                pass
+            schema_tables[schema] = table_list
+
+        return schema_tables
+
+    def __copy_tables(self, cursor_buffered):
+        schema_tables = self.get_table_list(cursor_buffered)
+        for schema in self.schema_replica:
+            loading_schema = self.schema_replica[schema]["loading"]
+            destination_schema = self.schema_replica[schema]["destination"]
+            table_list = schema_tables[schema]
+            for table in table_list:
+                logging.info("Copying the source table %s into %s.%s" % (table, loading_schema, table))
+                try:
+                    if self.keep_existing_schema:
+                        table_pkey = self.pg_engine.get_existing_pkey(destination_schema, table)
+                        logging.info("Collecting constraints and indices from the destination table  %s.%s" % (
+                        destination_schema, table))
+                        self.pg_engine.collect_idx_cons(destination_schema, table)
+                        logging.info("Removing constraints and indices from the destination table  %s.%s" % (
+                        destination_schema, table))
+                        self.pg_engine.cleanup_idx_cons(destination_schema, table)
+                        self.pg_engine.truncate_table(destination_schema, table)
+                    else:
+                        table_pkey = self.__create_indices(schema, table)
+                    master_status = self.copy_data(schema, table)
+                    self.pg_engine.store_table(destination_schema, table, table_pkey, master_status)
+                    if self.keep_existing_schema:
+                        self.logger.info("Adding constraint and indices to the destination table  %s.%s" % (
+                        destination_schema, table))
+                        self.pg_engine.create_idx_cons(destination_schema, table)
+                except:
+                    self.logger.info("Could not copy the table %s. Excluding it from the replica." % (table))
+                    raise
+
+    def copy_data(self, schema, table, cursor_buffered):
+        slice_insert = []
+        loading_schema = self.schema_replica[schema]["loading"]
+
+        logging.debug("estimating rows in %s.%s" % (schema, table))
+        sql_rows = """
+            SELECT
+                table_rows as table_rows,
+                CASE
+                    WHEN avg_row_length>0
+                    then
+                        round(({}/avg_row_length))
+                ELSE
+                    0
+                END as copy_limit,
+                transactions
+            FROM
+                information_schema.TABLES,
+                information_schema.ENGINES
+            WHERE
+                    table_schema=%s
+                AND	table_type='BASE TABLE'
+                AND table_name=%s
+                AND TABLES.engine = ENGINES.engine
+            ;
+        """
+        sql_rows = sql_rows.format(self.copy_max_memory)
+        cursor_buffered.execute(sql_rows, (schema, table))
+        count_rows = cursor_buffered.fetchone()
+        total_rows = count_rows["table_rows"]
+        copy_limit = int(count_rows["copy_limit"])
+        table_txs = count_rows["transactions"] == "YES"
+        if copy_limit == 0:
+            copy_limit = 1000000
+        num_slices = int(total_rows // copy_limit)
+        range_slices = list(range(num_slices + 1))
+        total_slices = len(range_slices)
+        slice = range_slices[0]
+        logging.debug("The table %s.%s will be copied in %s  estimated slice(s) of %s rows, using a transaction %s" % (
+        schema, table, total_slices, copy_limit, table_txs))
+        out_file = '%s/%s_%s.csv' % (self.out_dir, schema, table)
+        master_status = self.get_master_coordinates()
+
+        select_columns = self.generate_select_statements(schema, table)
+        csv_data = ""
+        sql_csv = "SELECT * as data FROM `%s`.`%s`;" % (schema, table)
+        column_list = select_columns["column_list"]
+        logging.debug("Executing query for table %s.%s" % (schema, table))
+        if table_txs:
+            self.begin_tx()
+        self.cursor_unbuffered.execute(sql_csv)
+        if table_txs:
+            self.unlock_tables()
+        while True:
+            csv_results = self.cursor_unbuffered.fetchmany(copy_limit)
+            if len(csv_results) == 0:
+                break
+            csv_data = "\n".join(d[0] for d in csv_results)
+
+            if self.copy_mode == 'direct':
+                csv_file = io.StringIO()
+                csv_file.write(csv_data)
+                csv_file.seek(0)
+
+            if self.copy_mode == 'file':
+                csv_file = codecs.open(out_file, 'wb', self.charset)
+                csv_file.write(csv_data)
+                csv_file.close()
+                csv_file = open(out_file, 'rb')
+            try:
+                self.pg_engine.copy_data(csv_file, loading_schema, table, column_list)
+            except:
+                self.logger.info(
+                    "Table %s.%s error in PostgreSQL copy, saving slice number for the fallback to insert statements " % (
+                    loading_schema, table))
+                slice_insert.append(slice)
+
+            self.print_progress(slice + 1, total_slices, schema, table)
+            slice += 1
+
+            csv_file.close()
+        if len(slice_insert) > 0:
+            ins_arg = {}
+            ins_arg["slice_insert"] = slice_insert
+            ins_arg["table"] = table
+            ins_arg["schema"] = schema
+            ins_arg["select_stat"] = select_columns["select_stat"]
+            ins_arg["column_list"] = column_list
+            ins_arg["copy_limit"] = copy_limit
+            self.insert_table_data(ins_arg)
+
+        if table_txs:
+            self.end_tx()
+        else:
+            self.unlock_tables()
+        self.cursor_unbuffered.close()
+        self.disconnect_db_unbuffered()
+        self.disconnect_db_buffered()
+
+        try:
+            remove(out_file)
+        except:
+            pass
+        return master_status
+
     def get_event(self, binlogevent) -> Operation:
+        logging.info('parse event type')
         if isinstance(binlogevent, DeleteRowsEvent):
             event = Operation.DELETE
         elif isinstance(binlogevent, UpdateRowsEvent):
@@ -198,6 +377,30 @@ class MySqlService(object):
         else:
             event = Operation.INSERT
         return event
+
+    def parse_dict(self, dic_encoded, charset):
+        dictionary_decode = {}
+        list_decode = []
+        if isinstance(dic_encoded, list):
+            for item in dic_encoded:
+                list_decode.append(self.parse_dict(item))
+            return list_decode
+        elif not isinstance(dic_encoded, dict):
+            try:
+                return dic_encoded.decode(charset)
+            except Exception:
+                return dic_encoded
+        else:
+            for key, value in dic_encoded.items():
+                try:
+                    dictionary_decode[key.decode(charset)] = self.parse_dict(value)
+                except Exception:
+                    dictionary_decode[key] = self.parse_dict(value)
+        return dictionary_decode
+
+    def get_text_geo(self, raw_data):
+        decoded_data = binascii.hexlify(raw_data)
+        return decoded_data.decode()[8:]
 
     def filter(self, conf_name, table, schema, columns: {}) -> bool:
         try:

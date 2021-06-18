@@ -10,3 +10,8 @@ class Metadata(object):
         self.table = table
         self.event_time = event_time
         self.event = event
+
+    def __str__(self) -> str:
+        return 'logpos: {0}, schema: {1}, table: {2}, event_time: {3}, event: {4}'.format(self.logpos, self.schema,
+                                                                                          self.table, self.event_time,
+                                                                                          self.event)

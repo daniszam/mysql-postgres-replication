@@ -1,2 +1,6 @@
 PyMySQL==0.10.1
 psycopg2-binary
+pathlib
+PyYAML==5.4.1
+datetime
+mysql-replication

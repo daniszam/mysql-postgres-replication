@@ -1,0 +1,12 @@
+version: "3"
+services:
+  replication:
+    volumes:
+      - ./$${CONFIGURATION_FILE}:/replication/config.yaml
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 9990
+      - 8080
+      - 8787

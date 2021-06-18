@@ -20,7 +20,7 @@ example:
       filter:
 #       schema name
         public:
-#         table name
+          #         table name
           MyGuests:
             #           field name
             id:
@@ -29,23 +29,23 @@ example:
               less: 30
             email:
               equal: 'danis.zamaliev@yandex.ru'
-    mysql_2:
-      server_id: 2
-      user: 'root'
-      password: 'root'
-      host: '127.0.0.1'
-      port: 3306
-      timeout: 10
-      charset: 'UTF-8'
-      ignore:
-        schema:
-        table:
-      filter:
-        public:
-          table_name:
-            id:
-              more: 10
-              less: 50
+  #    mysql_2:
+  #      server_id: 2
+  #      user: 'root'
+  #      password: 'root'
+  #      host: '127.0.0.1'
+  #      port: 3306
+  #      timeout: 10
+  #      charset: 'UTF-8'
+  #      ignore:
+  #        schema:
+  #        table:
+  #      filter:
+  #        public:
+  #          table_name:
+  #            id:
+  #              more: 10
+  #              less: 50
 
 
   to:
@@ -58,5 +58,46 @@ example:
       port: 5433
       timeout: 10
       #     can be true or false, true - init schema on start, false - need mapping to use
+      create_on_init: true
+      charset: 'utf8'
+
+
+
+configuration_name:
+  error_file: 'path_to_file'
+  from:
+    server_name:
+      server_id: 1
+      user: 'root'
+      password: 'root'
+      host: '127.0.0.1'
+      port: 3306
+      timeout: 10
+      charset: 'utf8'
+      schema: [ 'public' ]
+      ignore:
+        schema:
+          table:
+      mapping:
+        schema:
+          table: 'table_name'
+      filter:
+        public:
+          MyGuests:
+            id:
+              more: 0
+              less: 30
+            email:
+              equal: 'danis.zamaliev@yandex.ru'
+
+  to:
+    postgresql:
+      database: 'postgres'
+      user: 'postgres'
+      password: 'postgres'
+      schema: 'public'
+      host: '127.0.0.1'
+      port: 5433
+      timeout: 10
       create_on_init: true
       charset: 'utf8'
