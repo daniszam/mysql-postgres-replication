@@ -127,6 +127,14 @@ def mysql_schemas(configuration: {}, configuration_name: str) -> []:
     return schemas
 
 
+def get_batch_size(configuration: {}, configuration_name: str) -> int:
+    return configuration[configuration_name]['batch_size']
+
+
+def get_init(configuration: {}, configuration_name: str) -> bool:
+    return configuration[configuration_name]['init']
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     CONF_NAME = os.getenv("CONFIGURATION_FILE", "example")
@@ -140,8 +148,10 @@ if __name__ == "__main__":
     schemas = mysql_schemas(configuration, CONF_NAME)
     postgres_conn = postgresql_connection(configuration, CONF_NAME)
     error_writer = get_error_writer(configuration, CONF_NAME)
+    init = get_init(configuration, CONF_NAME)
+    batch_size = get_batch_size(configuration, CONF_NAME)
     logging.info('start creating services')
     mysql_service: MySqlService = MySqlService(connections, init_schema=False, schema_replica=schemas,
                                                postgres_conf=postgres_conn, error_writer=error_writer,
-                                               filter_map=filter_map)
+                                               filter_map=filter_map, batch_size=batch_size, init_on_start=init)
     mysql_service.init()

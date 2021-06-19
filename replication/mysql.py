@@ -26,7 +26,9 @@ class MySqlService(object):
                  schema_replica: [],
                  postgres_conf: Connection,
                  error_writer: ErrorWriter,
-                 filter_map: {}) -> None:
+                 filter_map: {},
+                 batch_size,
+                 init_on_start) -> None:
         super().__init__()
         self.conn_buffered = None
         self.copy_max_memory = None
@@ -39,14 +41,15 @@ class MySqlService(object):
         self.skip_tables = {}
         self.filter_map = filter_map
         self.schema_replica = schema_replica
-        self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
         self.special_data_types = self.BLOB + self.GEOMETRY
-        self.batch_size = 0
+        self.batch_size = batch_size
+        self.init_on_start = init_on_start
         self.postgres_service: PostgreSqlService
         self.mapping = {}
         self.postgres_conf = postgres_conf
         self.error_writer = error_writer
         self.process_list = [Process]
+        self.stream_list = [self.init_connection(connection_conf) for connection_conf in connection_conf_list]
 
     def init(self):
         # create schema if need
@@ -54,7 +57,6 @@ class MySqlService(object):
             self.init_schema()
 
         self.start_listen()
-
 
     def init_connection(self, connection_conf: Connection) -> (BinLogStreamReader, Connection):
         logging.debug('start init replica')
@@ -64,16 +66,16 @@ class MySqlService(object):
                 "port": connection_conf.port,
                 "user": connection_conf.user,
                 "passwd": connection_conf.password,
-                "charset": "utf8",
+                "charset": connection_conf.charset,
                 "connect_timeout": connection_conf.timeout
             },
             server_id=connection_conf.server_id,
             only_events=[DeleteRowsEvent, WriteRowsEvent, UpdateRowsEvent],
-            log_file="binlog.000001",
-            log_pos=2792,
+            log_file=None if not self.init_on_start else "binlog.000001",
+            log_pos=None if not self.init_on_start else 2792,
             auto_position=None,
-            blocking=True,
-            resume_stream=True,
+            blocking=False,
+            resume_stream=self.init_on_start,
             only_schemas=self.schema_replica,
             slave_heartbeat=1,
         )
@@ -82,12 +84,14 @@ class MySqlService(object):
     def start_listen(self):
         for stream, connection_conf in self.stream_list:
             logging.debug('start listen new events')
-            process = Process(target=self.run, args=(stream, connection_conf,))
-            process.start()
+            self.run(stream, connection_conf)
+            # process = Process(target=self.run, args=(stream, connection_conf,))
+            # process.start()
 
     def run(self, stream: BinLogStreamReader, connection_conf: Connection):
         logging.basicConfig(level=logging.DEBUG)
         self.init_postgresql()
+        self.batch_insert = []
         while True:
             for binlogevent in stream:
                 logging.debug('got a new event')
@@ -110,14 +114,12 @@ class MySqlService(object):
         self.copy_mode = 'file'
         self.copy_max_memory = 300 * 1024 * 1024  # 300mb
 
-
     def __init_mysql_replica(self):
         self.init_replica()
 
     def parse_event(self, binlogevent, connection_conf: Connection):
         table = binlogevent.table
         schema = binlogevent.schema
-        batch_insert = []
         logging.debug('event schema:%s table:%s', schema, table)
 
         event = self.get_event(binlogevent)
@@ -126,7 +128,6 @@ class MySqlService(object):
             return
 
         table_type_map = self.get_table_type_map(connection_conf)
-
         metadata = Metadata(
             logpos=binlogevent.packet.log_pos,
             schema=schema,
@@ -178,42 +179,37 @@ class MySqlService(object):
             new_data=columns
         )
 
+        self.batch_insert.append(batch)
         logging.debug('add event to a batch %s', batch)
-        batch_insert.append(batch)
 
-        if len(batch_insert) >= self.batch_size:
+        if len(self.batch_insert) >= self.batch_size:
             logging.debug('send batch to postgres service')
-            self.postgres_service.parse_batch(batch_insert)
+            self.postgres_service.parse_batch(self.batch_insert)
+            self.batch_insert.clear()
 
-    def sync_tables(self):
-        logging.info("Starting sync tables for source %s" % self.source)
+    def sync_tables(self, cursor_buffered, pg_engine):
         self.__init_sync()
-        self.get_table_list()
+        self.get_table_list(cursor_buffered)
         self.create_destination_schemas()
         try:
-            self.pg_engine.schema_loading = self.schema_loading
-            self.pg_engine.schema_tables = self.schema_tables
-            if self.keep_existing_schema:
-                self.disconnect_db_buffered()
-                self.__copy_tables()
-            else:
-                self.create_destination_tables()
-                self.disconnect_db_buffered()
-                self.__copy_tables()
-                self.pg_engine.grant_select()
-                self.pg_engine.swap_tables()
-                self.drop_loading_schemas()
+            pg_engine.schema_loading = self.schema_replica
+            pg_engine.schema_tables = self.get_table_list(cursor_buffered)
+            self.create_destination_tables()
+            self.disconnect_db_buffered()
+            self.__copy_tables()
+            pg_engine.grant_select()
+            pg_engine.swap_tables()
+            self.drop_loading_schemas()
             self.pg_engine.set_source_status("synced")
             self.connect_db_buffered()
             master_end = self.get_master_coordinates()
             self.disconnect_db_buffered()
             self.pg_engine.set_source_highwatermark(master_end, consistent=False)
             self.pg_engine.cleanup_table_events()
-            notifier_message = "the sync for tables %s in source %s is complete" % (self.tables, self.source)
-            self.notifier.send_message(notifier_message, 'info')
-            self.logger.info(notifier_message)
+            notifier_message = "syncing for tables in schema %s is complete" % self.schema_replica
+            logging.info(notifier_message)
         except Exception as e:
-            notifier_message = "the move data for tables %s in source %s failed" % (self.tables, self.source)
+            notifier_message = "the move data in source %s failed" % self.schema_replica
             self.error_writer.error(e, notifier_message, datetime.datetime.now(), None)
             raise
 
@@ -245,10 +241,10 @@ class MySqlService(object):
                     if self.keep_existing_schema:
                         table_pkey = self.pg_engine.get_existing_pkey(destination_schema, table)
                         logging.info("Collecting constraints and indices from the destination table  %s.%s" % (
-                        destination_schema, table))
+                            destination_schema, table))
                         self.pg_engine.collect_idx_cons(destination_schema, table)
                         logging.info("Removing constraints and indices from the destination table  %s.%s" % (
-                        destination_schema, table))
+                            destination_schema, table))
                         self.pg_engine.cleanup_idx_cons(destination_schema, table)
                         self.pg_engine.truncate_table(destination_schema, table)
                     else:
@@ -257,10 +253,10 @@ class MySqlService(object):
                     self.pg_engine.store_table(destination_schema, table, table_pkey, master_status)
                     if self.keep_existing_schema:
                         self.logger.info("Adding constraint and indices to the destination table  %s.%s" % (
-                        destination_schema, table))
+                            destination_schema, table))
                         self.pg_engine.create_idx_cons(destination_schema, table)
                 except:
-                    self.logger.info("Could not copy the table %s. Excluding it from the replica." % (table))
+                    logging.info("Could not copy the table %s. Excluding it from the replica." % (table))
                     raise
 
     def copy_data(self, schema, table, cursor_buffered):
@@ -302,7 +298,7 @@ class MySqlService(object):
         total_slices = len(range_slices)
         slice = range_slices[0]
         logging.debug("The table %s.%s will be copied in %s  estimated slice(s) of %s rows, using a transaction %s" % (
-        schema, table, total_slices, copy_limit, table_txs))
+            schema, table, total_slices, copy_limit, table_txs))
         out_file = '%s/%s_%s.csv' % (self.out_dir, schema, table)
         master_status = self.get_master_coordinates()
 
@@ -337,7 +333,7 @@ class MySqlService(object):
             except:
                 self.logger.info(
                     "Table %s.%s error in PostgreSQL copy, saving slice number for the fallback to insert statements " % (
-                    loading_schema, table))
+                        loading_schema, table))
                 slice_insert.append(slice)
 
             self.print_progress(slice + 1, total_slices, schema, table)

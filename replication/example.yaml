@@ -1,8 +1,10 @@
 # configuration name
 example:
   error_file: './mysql-postgres-replication-error.json'
+  init: false
+  batch_size: 10
   from:
-#   server name
+    #   server name
     mysql_1:
       server_id: 1
       user: 'root'

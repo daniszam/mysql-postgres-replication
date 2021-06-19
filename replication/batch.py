@@ -10,4 +10,4 @@ class Batch(object):
         self.new_data = new_data
 
     def __str__(self) -> str:
-        return str(self.metadata) + str(self.old_data) + str(self.new_data)
+        return 'metadata: ' + str(self.metadata) + 'old_data: ' + str(self.old_data) + 'new_data: ' + str(self.new_data)
