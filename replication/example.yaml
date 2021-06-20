@@ -1,11 +1,12 @@
 # configuration name
 example:
   error_file: './mysql-postgres-replication-error.json'
-  init: false
+  init: true
   batch_size: 10
   from:
     #   server name
     mysql_1:
+      database: 'public'
       server_id: 1
       user: 'root'
       password: 'root'

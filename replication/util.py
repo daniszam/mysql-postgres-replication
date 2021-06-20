@@ -111,7 +111,8 @@ def mysql_connections(configuration: {}, configuration_name: str) -> [Connection
             timeout=mysql_configuration['timeout'],
             charset=mysql_configuration['charset'],
             name=mysql_db_name,
-            server_id=mysql_configuration['server_id']
+            server_id=mysql_configuration['server_id'],
+            database=mysql_configuration['database']
         )
         connection_list.append(connection)
     return connection_list

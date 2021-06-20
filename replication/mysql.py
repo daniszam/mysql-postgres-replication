@@ -6,6 +6,10 @@ from multiprocessing import Process
 import pymysql
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import DeleteRowsEvent, UpdateRowsEvent, WriteRowsEvent
+from sqlalchemy import create_engine, MetaData, Table
+from sqlalchemy.dialects.mysql.base import TINYINT
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 from replication.batch import Batch
 from replication.connection import Connection
@@ -60,6 +64,8 @@ class MySqlService(object):
 
     def init_connection(self, connection_conf: Connection) -> (BinLogStreamReader, Connection):
         logging.debug('start init replica')
+        if self.init_on_start:
+            self.pull_data(connection_conf, self.postgres_conf)
         stream = BinLogStreamReader(
             connection_settings={
                 "host": connection_conf.host,
@@ -71,8 +77,6 @@ class MySqlService(object):
             },
             server_id=connection_conf.server_id,
             only_events=[DeleteRowsEvent, WriteRowsEvent, UpdateRowsEvent],
-            log_file=None if not self.init_on_start else "binlog.000001",
-            log_pos=None if not self.init_on_start else 2792,
             auto_position=None,
             blocking=False,
             resume_stream=self.init_on_start,
@@ -469,3 +473,68 @@ class MySqlService(object):
             table_type_map[schema] = table_map
             table_map = {}
         return table_type_map
+
+    def get_table_list_from_db(self, metadata):
+        sql = "select table_name from information_schema.tables where table_schema='public'"
+        return [name for (name,) in metadata.execute(sql)]
+
+    def make_session(self, connection_string):
+        engine = create_engine(connection_string, echo=False)
+        Session = sessionmaker(bind=engine)
+        return Session(), engine
+
+    def pull_data(self, from_db, to_db):
+        from_db = 'mysql://{0}:{1}@{2}:{3}/{4}'.format(from_db.user, from_db.password, from_db.host, from_db.port,
+                                                       from_db.database)
+        to_db = 'postgresql://{0}:{1}@{2}:{3}/{4}'.format(to_db.user, to_db.password, to_db.host, to_db.port,
+                                                          to_db.database)
+        print(locals())
+        source, sengine = self.make_session(from_db)
+        smeta = MetaData(bind=sengine)
+        destination, dengine = self.make_session(to_db)
+        dmeta = MetaData(bind=dengine)
+
+        dest_tables = self.get_table_list_from_db(dengine)
+
+        for table_name in dest_tables:
+            print('Processing', table_name)
+            print('Pulling schema from source server')
+            table = Table(table_name, smeta, autoload=True)
+            print('Creating table on destination server')
+            table.metadata.create_all(dengine)
+            NewRecord = self.quick_mapper(table)
+            columns = table.columns.keys()
+            dest_table = Table(table_name, dmeta, autoload=True)
+            dest_columns = dest_table.columns.keys()
+            print('Transferring records')
+            for record in source.query(table).all():
+                data = {}
+                for column in dest_columns:
+                    value = getattr(record, column)
+                    if isinstance(table.columns[column].type, TINYINT):
+                        value = bool(value)
+                    data[str(column)] = value
+
+                destination.merge(NewRecord(**data))
+
+        print('Committing changes')
+        destination.commit()
+
+        print('Fixing sequences')
+        for table_name in dest_tables:
+            table = Table(table_name, dmeta, autoload=True)
+            columns = table.primary_key.columns.keys()
+            print('Fixing sequence for %s with primary key: %s' % (table_name, ' '.join(columns)))
+            try:
+                dengine.execute("select setval('%(table_name)s_id_seq', max(%(primary_key)s)) from %(table_name)s" % {
+                    'table_name': table_name, 'primary_key': columns[0]})
+            except Exception as e:
+                print(e)
+
+    def quick_mapper(self, table):
+        Base = declarative_base()
+
+        class GenericMapper(Base):
+            __table__ = table
+
+        return GenericMapper
